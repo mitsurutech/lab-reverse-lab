@@ -1,0 +1,220 @@
+# Reverse engineering lab: read programs with gdb, radare2, objdump, strace and ltrace
+# Five small programs of ours, each hiding a different key on every copy of the lab.
+# Everything is installed by the setup below, from Ubuntu's archive, the first time it starts.
+cpus: 1
+memory: 1024    # MB
+disk: 10        # GB
+
+# Nothing opens in the browser: the lab is the terminal.
+open: []
+
+# Run once, as root. Its output is kept in /var/log/mitsurutech-setup.log on the VM.
+setup: |
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  apt-get install -y -qq gcc libc6-dev gdb radare2 binutils strace ltrace file
+  home=/home/student
+  [ -d $home ] || home=/root
+  install -d -m 700 /var/lib/revlab /var/lib/revlab/build
+  work=/var/lib/revlab/build
+  bin=$home/revlab
+  install -d -m 755 $bin
+  rnd() { head -c 800 /dev/urandom | tr -dc 'a-z' | head -c $1; }
+  num() { echo $(( (RANDOM * 32768 + RANDOM) % $1 + $2 )); }
+  xorlist() { sep=; for b in $(printf %s "$1" | od -An -v -tu1); do printf '%s%d' "$sep" $((b ^ $2)); sep=,; done; }
+  k1=$(rnd 8)
+  k2=$(rnd 8)
+  a4=$(rnd 4)
+  b4=$(rnd 4)
+  k5=$(rnd 8)
+  n3=$(num 900000 100000)
+  mask=$(num 8388608 8388608)
+  off=$(num 60000 5000)
+  sub=$(num 9000 1000)
+  target=$(( (((n3 + off) ^ mask) - sub) & 4294967295 ))
+  cat > $work/hello.c <<'REVLAB_HELLO_END'
+  #include <stdio.h>
+  int main(void) {
+      printf("Hello from revlab\n");
+      return 0;
+  }
+  REVLAB_HELLO_END
+  cat > $work/crack1.c <<'REVLAB_C1_END'
+  #include <stdio.h>
+  #include <string.h>
+  int main(int argc, char **argv) {
+      if (argc != 2) { puts("usage: crack1 PASSWORD"); return 2; }
+      if (strcmp(argv[1], KEY) == 0) { puts("Access granted."); return 0; }
+      puts("Access denied.");
+      return 1;
+  }
+  REVLAB_C1_END
+  cat > $work/crack2.c <<'REVLAB_C2_END'
+  #include <stdio.h>
+  #include <string.h>
+  static const unsigned char blob[] = { BLOB };
+  int main(int argc, char **argv) {
+      char key[sizeof blob + 1];
+      if (argc != 2) { puts("usage: crack2 PASSWORD"); return 2; }
+      for (unsigned i = 0; i < sizeof blob; i++) key[i] = blob[i] ^ 90;
+      key[sizeof blob] = 0;
+      if (strcmp(argv[1], key) == 0) { puts("Access granted."); return 0; }
+      puts("Access denied.");
+      return 1;
+  }
+  REVLAB_C2_END
+  cat > $work/crack3.c <<'REVLAB_C3_END'
+  #include <stdio.h>
+  #include <stdlib.h>
+  static int check(unsigned n) {
+      unsigned x = n;
+      x = x + OFFSET;
+      x = x ^ MASK;
+      x = x - SUB;
+      return x == TARGET;
+  }
+  int main(int argc, char **argv) {
+      if (argc != 2) { puts("usage: crack3 NUMBER"); return 2; }
+      if (check((unsigned)strtoul(argv[1], 0, 10))) { puts("Access granted."); return 0; }
+      puts("Access denied.");
+      return 1;
+  }
+  REVLAB_C3_END
+  cat > $work/crack4.c <<'REVLAB_C4_END'
+  #include <stdio.h>
+  #include <string.h>
+  int main(void) {
+      char key[32], line[64];
+      snprintf(key, sizeof key, "%s-%s", PART1, PART2);
+      printf("Password: ");
+      if (!fgets(line, sizeof line, stdin)) return 2;
+      line[strcspn(line, "\n")] = 0;
+      if (strcmp(line, key) == 0) { puts("Access granted."); return 0; }
+      puts("Access denied.");
+      return 1;
+  }
+  REVLAB_C4_END
+  cat > $work/crack5.c <<'REVLAB_C5_END'
+  #include <stdio.h>
+  static const unsigned char blob[] = { BLOB };
+  int main(void) {
+      char name[16], path[64];
+      for (unsigned i = 0; i < sizeof blob; i++) name[i] = blob[i] ^ 33;
+      name[sizeof blob] = 0;
+      snprintf(path, sizeof path, "/tmp/.revlab-%s", name);
+      FILE *licence = fopen(path, "r");
+      if (licence) { fclose(licence); puts("Access granted."); return 0; }
+      puts("No licence file found.");
+      return 1;
+  }
+  REVLAB_C5_END
+  cc="gcc -O0 -no-pie -fno-stack-protector"
+  $cc -o $bin/hello $work/hello.c
+  $cc -o $bin/crack1 $work/crack1.c -DKEY=\"$k1\"
+  $cc -o $bin/crack2 $work/crack2.c -DBLOB=$(xorlist $k2 90)
+  $cc -o $bin/crack3 $work/crack3.c -DOFFSET=$off -DMASK=$mask -DSUB=$sub -DTARGET=$target
+  $cc -o $bin/crack4 $work/crack4.c -DPART1=\"$a4\" -DPART2=\"$b4\"
+  $cc -o $bin/crack5 $work/crack5.c -DBLOB=$(xorlist $k5 33)
+  printf 'crack1=%s\ncrack2=%s\ncrack3=%s\ncrack4=%s-%s\ncrack5=%s\n' $k1 $k2 $n3 $a4 $b4 $k5 > /var/lib/revlab/keys
+  chmod 600 /var/lib/revlab/keys
+  rm -rf $work
+  chmod 755 $bin/hello $bin/crack1 $bin/crack2 $bin/crack3 $bin/crack4 $bin/crack5
+  cat > $home/answers.txt <<'REVLAB_ANSWERS_END'
+  # One line per program: the key you found, after the equals sign, nothing else.
+  # For example, if crack1 took the password hunter2 the line would read: crack1=hunter2
+  crack1=
+  crack2=
+  crack3=
+  crack4=
+  crack5=
+  REVLAB_ANSWERS_END
+  cat > $home/README.md <<'REVLAB_README_END'
+  # Lab: reading a program without its source
+
+  Every program is a file of machine instructions. You cannot read them like a story, but a
+  handful of tools turn them back into something a person can follow, and learning to use them
+  is how a developer finds a bug in a library with no source, how a defender sees what a
+  suspicious-looking tool on their own server really does, and how a student of compilers sees
+  what a compiler made. You will use them on five small programs written for this lab.
+
+  ## What this lab is, and what it is not
+
+  It is reading and understanding: how a program checks a password, where a program keeps its
+  text, what calls it makes. The programs are ours, compiled on this machine, and each one hides
+  a key that is different on every copy of the lab. It never teaches, and nothing here may be
+  used for: malware, breaking the licence of real software, key generators, hiding from a
+  debugger, exploiting a program, or looking at a program that is not one of these. Your copy
+  cannot reach the internet to fetch one anyway.
+
+  ## The programs (in the revlab folder of your home)
+
+  | program | what it wants | a way in |
+  |---------|---------------|----------|
+  | hello   | nothing, it has no key | practice on this one first |
+  | crack1  | a password on the command line | look without running it |
+  | crack2  | a password on the command line | stop it while it runs and look in memory |
+  | crack3  | a number on the command line | read the arithmetic and work backwards |
+  | crack4  | a password typed when it asks | watch the library calls it makes |
+  | crack5  | nothing, it looks for a file | watch the system calls it makes |
+
+  Run one with no key to see what it says, for example revlab/crack1 hello. They tell you
+  only Access granted or Access denied.
+
+  ## The tools, from the simplest
+
+  - file revlab/crack1 says what kind of file it is. strings revlab/crack1 prints the text inside.
+  - objdump -d revlab/crack1 --disassemble=main turns the instructions back into assembly.
+    Look for call lines (a call to strcmp compares two strings) and cmp lines (a comparison).
+  - r2 -A revlab/crack1 opens radare2 (type pdf @ main to print main, q to quit). It names the
+    strings it finds, which makes assembly easier to read.
+  - gdb revlab/crack2 runs a program under a debugger. Useful commands: break strcmp, run PASSWORD,
+    info registers, x/s ADDRESS (a string at an address), bt, disassemble, stepi, continue, quit.
+    On this machine the first argument of a call is in the register rdi and the second in rsi.
+    gdb may offer to use debuginfod: answer n.
+  - ltrace revlab/crack4 lists the library calls a program makes with their arguments, and
+    strace revlab/crack5 lists the calls it makes to the kernel.
+
+  ## What to hand in
+
+  Put the key for each program in the file answers.txt in your home folder, one line each, in
+  the form crack1=the-key. Every key is a word (crack4's has a dash in it), except crack3's, which is a number.
+  Your teacher's check reads answers.txt and compares it with the keys made for this copy
+  of the lab, which are stored where only the administrator can read them. A key from another
+  student's lab is no use: theirs are different.
+
+  Work in this order if you are unsure, and write down in your own words how you found each key:
+  that is what a security report or a lab book is.
+  REVLAB_README_END
+  chown student:student $home/answers.txt $home/README.md 2>/dev/null
+  echo "Read README.md in your home folder first." > /etc/motd
+  echo "revlab: the programs are in $bin"
+
+# Marks a handed-in VM, KAN-29: run as root on a copy of the saved disk after a fresh boot, so
+# it sees only what was saved. Its exit status is the result: 0 passes.
+check: |
+  KEYS=/var/lib/revlab/keys
+  fail() { echo "NOT PASSED: $*"; exit 1; }
+  [ -s $KEYS ] || fail "the lab's own keys are missing, so the lab did not finish setting up"
+  home=/home/student
+  [ -d $home ] || home=/root
+  ANSWERS=$home/answers.txt
+  [ -f $ANSWERS ] || fail "answers.txt is not in your home folder"
+  for n in 1 2 3 4 5; do
+    want=$(grep "^crack$n=" $KEYS | head -n 1 | cut -d= -f2-)
+    [ -n "$want" ] || fail "the lab's keys file is damaged"
+    got=$(grep -E "^crack$n[ ]*=" $ANSWERS | tail -n 1 | cut -d= -f2- | tr -d ' \t\r"')
+    [ -n "$got" ] || fail "crack$n has no key in answers.txt"
+    [ "$got" = "$want" ] || fail "the key you wrote for crack$n is not the key of this program"
+  done
+  # The programs must still be the ones the keys belong to: each accepts its own key.
+  bin=$home/revlab
+  [ "$($bin/crack1 $(grep '^crack1=' $KEYS | cut -d= -f2-))" = "Access granted." ] || fail "crack1 no longer accepts its own key: the lab was changed"
+  [ "$($bin/crack2 $(grep '^crack2=' $KEYS | cut -d= -f2-))" = "Access granted." ] || fail "crack2 no longer accepts its own key: the lab was changed"
+  [ "$($bin/crack3 $(grep '^crack3=' $KEYS | cut -d= -f2-))" = "Access granted." ] || fail "crack3 no longer accepts its own key: the lab was changed"
+  [ "$(grep '^crack4=' $KEYS | cut -d= -f2- | $bin/crack4 | grep -c 'Access granted[.]')" = 1 ] || fail "crack4 no longer accepts its own key: the lab was changed"
+  k5=$(grep '^crack5=' $KEYS | cut -d= -f2-)
+  touch /tmp/.revlab-$k5
+  out5=$($bin/crack5)
+  rm -f /tmp/.revlab-$k5
+  [ "$out5" = "Access granted." ] || fail "crack5 no longer accepts its own key: the lab was changed"
+  echo "PASSED: all five keys found, each the key of this copy's own program"
